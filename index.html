@@ -88,6 +88,10 @@ svg.ic.lg{width:26px;height:26px}
 .mode-cell svg{color:var(--dim)}
 .mode-cell:active{background:var(--surface-2)}
 .mode-cell .cnt{font-size:11px;color:var(--dim-2);font-weight:400}
+.exam-entry{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:var(--surface);border-radius:20px;box-shadow:var(--shadow-card);padding:18px;margin-top:10px}
+.exam-entry:active{background:var(--surface-2)}
+.exam-entry .ic-wrap{width:46px;height:46px;border-radius:14px;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center;flex:none}
+.exam-entry .chev{color:var(--dim-2);flex:none}
 
 /* banner */
 .banner{display:flex;gap:10px;align-items:flex-start;background:var(--surface);border-radius:16px;box-shadow:var(--shadow-card);padding:13px 14px;margin-top:14px}
@@ -476,6 +480,8 @@ function viewToday(){
   h+='<div class="group-lab">练习模式</div><div class="mode-grid">';
   modes.forEach(function(m){ h+='<button class="mode-cell" onclick="startMode(\''+m[0]+'\')">'+ic(m[1],"lg")+'<span>'+m[2]+'</span><span class="cnt tnum">'+m[3]+' 题</span></button>'; });
   h+='</div>';
+  /* 考试模拟入口（贴近正式考试：选择 15 + 判断 15） */
+  h+='<button class="exam-entry" onclick="startMode(\'sim\')"><span class="ic-wrap">'+ic("clock","lg")+'</span><span style="flex:1"><span style="display:block;font-size:16.5px;font-weight:600">考试模拟 · 30 题</span><span style="display:block;color:var(--dim);font-size:13.5px;margin-top:2px;line-height:1.5">随机抽选择题 15 道 + 判断题 15 道，覆盖各专题；过程不判题，交卷统一出分</span></span><span class="chev">'+ic("chevR")+'</span></button>';
   /* 专题 */
   h+='<div class="group-lab">按专题练</div><div class="glist">';
   TOPICS.forEach(function(t){
@@ -752,9 +758,28 @@ function startMode(mode){
   else if(mode==="wrong"){ ids=BANK.filter(function(q){ var c=cardOf(q.id); return c&&c.wrong>0; }).sort(function(a,b){ return cardOf(b.id).wrong-cardOf(a.id).wrong; }).map(function(q){ return q.id; }); }
   else if(mode==="fav") ids=BANK.filter(function(q){ var c=cardOf(q.id); return c&&c.fav; }).map(function(q){ return q.id; });
   else if(mode==="exam") return newSession("exam","全量模考",shuffle(BANK.map(function(q){ return q.id; })),true);
+  else if(mode==="sim") return startSim();
   else return;
   var titles={seq:"顺序练习",random:"随机练习",new:"只练新题",review:"到期复习",wrong:"错题练习",fav:"收藏练习"};
   newSession(mode,titles[mode]||"练习",ids,false);
+}
+/* 按专题轮转抽题：先把每个专题洗牌，再逐专题轮流取，保证覆盖面 */
+function sampleByTopic(qs,n){
+  var byTopic={};
+  qs.forEach(function(q){ (byTopic[q.topic]||(byTopic[q.topic]=[])).push(q); });
+  var groups=TOPICS.filter(function(t){ return byTopic[t]&&byTopic[t].length; }).map(function(t){ return shuffle(byTopic[t]); });
+  var out=[];
+  while(out.length<n){
+    var moved=false;
+    for(var i=0;i<groups.length&&out.length<n;i++){ if(groups[i].length){ out.push(groups[i].shift()); moved=true; } }
+    if(!moved) break;
+  }
+  return out;
+}
+function startSim(){
+  var cIds=sampleByTopic(BANK.filter(function(q){ return q.type==="choice"; }),15).map(function(q){ return q.id; });
+  var jIds=sampleByTopic(BANK.filter(function(q){ return q.type==="judge"; }),15).map(function(q){ return q.id; });
+  newSession("sim","考试模拟",cIds.concat(jIds),true);
 }
 function startTopic(t){
   var now=Date.now(), qs=BANK.filter(function(q){ return q.topic===t; });
@@ -771,12 +796,16 @@ function curSlot(){ return QZ.queue[QZ.pos]; }
 function curQ(){ return QMAP[curSlot().qid]; }
 function isCommitted(r){ return !!r&&(QZ.exam?true:r.grade!=null); }
 function pickOpt(k){
-  var r=QZ.results[QZ.pos]; if(r) return;
+  var r=QZ.results[QZ.pos]; if(r&&!QZ.exam) return;
   var q=curQ(), d=(QZ.drafts[QZ.pos]||[]).slice();
-  if(q.type==="choice"&&q.multi){ var i=d.indexOf(k); if(i>=0) d.splice(i,1); else d.push(k); QZ.drafts[QZ.pos]=d; renderQuizBody(); }
+  if(q.type==="choice"&&q.multi){
+    var i=d.indexOf(k); if(i>=0) d.splice(i,1); else d.push(k); QZ.drafts[QZ.pos]=d;
+    if(QZ.exam){ if(d.length) judge(); else { delete QZ.results[QZ.pos]; saveSessionSnap(); renderQuizBody(); } }
+    else renderQuizBody();
+  }
   else{ QZ.drafts[QZ.pos]=[k]; judge(); }
 }
-function pickJudge(v){ var r=QZ.results[QZ.pos]; if(r) return; QZ.drafts[QZ.pos]=[v?"T":"F"]; judge(); }
+function pickJudge(v){ var r=QZ.results[QZ.pos]; if(r&&!QZ.exam) return; QZ.drafts[QZ.pos]=[v?"T":"F"]; judge(); }
 function judge(){
   var q=curQ(), sel=(QZ.drafts[QZ.pos]||[]).slice(), correct;
   if(q.type==="choice"){ var a=q.answer.slice().sort().join(","), b=sel.slice().sort().join(","); correct=a===b; }
@@ -847,6 +876,12 @@ function nextQ(){
   } else { QZ.pos=nxt; QZ.dir=1; saveSessionSnap(); renderApp(); window.scrollTo(0,0); }
 }
 function finishSession(){
+  /* 考试模拟交卷：不改 FSRS 调度，只把错题（含未答）记入错题统计 */
+  if(QZ&&QZ.mode==="sim"&&!QZ.recorded){
+    QZ.recorded=true;
+    QZ.queue.forEach(function(slot,i){ var r=QZ.results[i]; if(!r||!r.correct) ensureCard(slot.qid).wrong+=1; });
+    save();
+  }
   QZ.done=true; QZ.elapsed=curElapsed(); stopTimer(); clearSession(); renderApp(); window.scrollTo(0,0);
 }
 function toggleFlag(){ var c=ensureCard(curQ().id); c.flag=!c.flag; save(); saveSessionSnap(); renderQuizHead(); }
@@ -875,7 +910,7 @@ function quizHTML(){
     h+='<div class="opts">';
     q.options.forEach(function(o){
       var cls="opt", mark="";
-      if(r){
+      if(r&&!QZ.exam){
         if(q.answer.indexOf(o.key)>=0){ cls+=" ok"; mark='<span class="mark" style="color:var(--green)">'+ic("check","sm")+'</span>'; }
         else if(r.sel.indexOf(o.key)>=0){ cls+=" bad"; mark='<span class="mark" style="color:var(--red)">'+ic("x","sm")+'</span>'; }
         else cls+=" dim";
@@ -888,7 +923,7 @@ function quizHTML(){
     h+='<div class="judge-row">';
     [true,false].forEach(function(v){
       var key=v?"T":"F", cls="judge-btn", mark="";
-      if(r){
+      if(r&&!QZ.exam){
         var isAns=q.answer===v, picked=r.sel[0]===key;
         if(isAns){ cls+=" ok"; mark=ic("check","sm"); }
         else if(picked){ cls+=" bad"; mark=ic("x","sm"); }
@@ -900,13 +935,19 @@ function quizHTML(){
   }
   /* 反馈 */
   if(r&&!QZ.exam) h+=feedbackHTML(q,r);
-  if(r&&QZ.exam) h+='<p style="color:var(--dim);font-size:13.5px;margin-top:14px">已记录答案，交卷后统一出分。</p>';
+  if(r&&QZ.exam) h+='<p style="color:var(--dim);font-size:13.5px;margin-top:14px">'+(QZ.mode==="sim"?"已记录，可随时改答，交卷后统一出分。":"已记录答案，交卷后统一出分。")+'</p>';
   h+='</div>';
   /* 底部导航 */
   var canNext=isCommitted(r);
   var isLast=QZ.pos===QZ.queue.length-1;
-  h+='<div class="quiz-nav"><div class="in"><button class="nav-btn" '+(QZ.pos===0?"disabled":"")+' onclick="prevQ()">'+ic("back","sm")+'上一题</button>'
-    +'<button class="nav-btn main" '+(!canNext?"disabled":"")+' onclick="nextQ()">'+(isLast&&canNext?"完成":"下一题")+' '+ic("fwd","sm")+'</button></div></div>';
+  if(QZ.mode==="sim"){
+    h+='<div class="quiz-nav"><div class="in"><button class="nav-btn" '+(QZ.pos===0?"disabled":"")+' onclick="prevQ()">'+ic("back","sm")+'上一题</button>'
+      +'<button class="nav-btn" '+(isLast?"disabled":"")+' onclick="simNext()">下一题 '+ic("fwd","sm")+'</button>'
+      +'<button class="nav-btn main" onclick="submitExam()">交卷</button></div></div>';
+  } else {
+    h+='<div class="quiz-nav"><div class="in"><button class="nav-btn" '+(QZ.pos===0?"disabled":"")+' onclick="prevQ()">'+ic("back","sm")+'上一题</button>'
+      +'<button class="nav-btn main" '+(!canNext?"disabled":"")+' onclick="nextQ()">'+(isLast&&canNext?"完成":"下一题")+' '+ic("fwd","sm")+'</button></div></div>';
+  }
   return h;
 }
 function feedbackHTML(q,r){
@@ -939,7 +980,7 @@ function feedbackHTML(q,r){
 function openCard(){
   var f=QZ.cardFilter||"all";
   var h='<div class="overlay" onclick="if(event.target===this)closeLayer()"><div class="sheet"><div class="grab"></div><h2>答题卡</h2>'
-    +'<div class="filter-row"><button class="'+(f==="all"?"on":"")+'" onclick="cardFilter(\'all\')">全部</button><button class="'+(f==="wrong"?"on":"")+'" onclick="cardFilter(\'wrong\')">错题</button><button class="'+(f==="todo"?"on":"")+'" onclick="cardFilter(\'todo\')">未答</button><button class="'+(f==="flag"?"on":"")+'" onclick="cardFilter(\'flag\')">标记</button></div>'
+    +'<div class="filter-row"><button class="'+(f==="all"?"on":"")+'" onclick="cardFilter(\'all\')">全部</button>'+(QZ.exam?"":'<button class="'+(f==="wrong"?"on":"")+'" onclick="cardFilter(\'wrong\')">错题</button>')+'<button class="'+(f==="todo"?"on":"")+'" onclick="cardFilter(\'todo\')">未答</button><button class="'+(f==="flag"?"on":"")+'" onclick="cardFilter(\'flag\')">标记</button></div>'
     +'<div class="cardgrid">';
   QZ.queue.forEach(function(slot,i){
     var r=QZ.results[i], cc=cardOf(slot.qid);
@@ -950,7 +991,7 @@ function openCard(){
     var style=(!show)?' style="visibility:hidden"':(QZ.exam&&r?' style="background:var(--surface-3);color:var(--text);font-weight:600"':"");
     h+='<button class="'+cls+'"'+style+' onclick="jumpTo('+i+')">'+(i+1)+((cc&&cc.flag)?'<span class="flg">'+ic("flag","sm")+'</span>':"")+'</button>';
   });
-  h+='</div><p style="color:var(--dim);font-size:13px;margin-top:14px">绿 = 答对 · 红 = 答错 · 灰 = 未答 · 蓝点 = 已标记</p></div></div>';
+  h+='</div><p style="color:var(--dim);font-size:13px;margin-top:14px">'+(QZ.exam?"深灰 = 已答 · 浅灰 = 未答 · 蓝点 = 已标记":"绿 = 答对 · 红 = 答错 · 灰 = 未答 · 蓝点 = 已标记")+'</p></div></div>';
   document.getElementById("layer").innerHTML=h;
 }
 function cardFilter(f){ QZ.cardFilter=f; openCard(); }
@@ -964,12 +1005,28 @@ function resultHTML(){
   var acc=total?Math.round(correct/total*100):0;
   var dist={1:0,2:0,3:0,4:0};
   res.forEach(function(r){ if(r.grade) dist[r.grade]++; });
-  var h='<div class="result-hero"><div style="color:var(--dim);font-size:15px">'+esc(QZ.title)+' · 完成</div><div class="score tnum">'+(QZ.exam?acc+" 分":acc+"%")+'</div><div style="color:var(--dim);font-size:14.5px">答对 '+correct+' / '+total+' 题 · 用时 '+fmtTime(QZ.elapsed)+'</div></div>';
+  var h='<div class="result-hero"><div style="color:var(--dim);font-size:15px">'+esc(QZ.title)+' · 完成</div><div class="score tnum">'+(QZ.mode==="sim"?correct+" 分":(QZ.exam?acc+" 分":acc+"%"))+'</div><div style="color:var(--dim);font-size:14.5px">答对 '+correct+' / '+total+' 题 · 用时 '+fmtTime(QZ.elapsed)+'</div></div>';
   if(!QZ.exam){
     var labels={1:"忘了",2:"模糊",3:"记得",4:"很熟"};
     h+='<div class="card mt"><div style="font-weight:600">本次自评分布</div><div class="dist">';
     [1,2,3,4].forEach(function(g){ h+='<div class="d"><b class="tnum">'+dist[g]+'</b><span>'+labels[g]+'</span></div>'; });
     h+='</div><p style="color:var(--dim);font-size:13.5px;margin:12px 0 0">评分已写入 FSRS 调度；答错的题已安排回炉与后续复习。</p></div>';
+  } else if(QZ.mode==="sim"){
+    var wrongIds=[];
+    QZ.queue.forEach(function(slot,i){ var r=QZ.results[i]; if(!r||!r.correct) wrongIds.push(slot.qid); });
+    h+='<div class="card mt"><div class="row"><div style="font-weight:600;flex:1">逐题复盘</div>'+(wrongIds.length?'<span style="color:var(--dim);font-size:13px">错题已记入错题统计</span>':"")+'</div>';
+    QZ.queue.forEach(function(slot,i){
+      var q=QMAP[slot.qid], r=QZ.results[i], ok=!!(r&&r.correct);
+      var tag=ok?'<span style="color:var(--green);font-weight:600;flex:none">答对</span>':(r?'<span style="color:var(--red);font-weight:600;flex:none">答错</span>':'<span style="color:var(--dim);font-weight:600;flex:none">未答</span>');
+      var mine=r?(q.type==="judge"?(r.sel[0]==="T"?"正确（√）":"错误（×）"):(r.sel.join("")||"未答")):"未答";
+      h+='<div style="padding:12px 0;border-top:1px solid var(--border)"><div class="row" style="align-items:flex-start;gap:8px"><span class="tnum" style="color:var(--dim);font-size:13.5px;flex:none;margin-top:2px">'+(i+1)+'.</span><span style="flex:1;font-size:15px;font-weight:500;line-height:1.5">'+esc(q.stem)+'</span>'+tag+'</div>'
+        +'<div style="color:var(--dim);font-size:14px;margin-top:5px;line-height:1.65;padding-left:25px">你的答案：<span style="color:'+(ok?"var(--text)":"var(--red)")+'">'+esc(mine)+'</span> · 正确答案：<b style="color:var(--text)">'+esc(answerText(q))+'</b>'
+        +(q.type==="choice"?'<br>'+q.options.filter(function(o){ return q.answer.indexOf(o.key)>=0; }).map(function(o){ return o.key+". "+esc(o.text); }).join("；"):"")
+        +(q.type==="judge"&&q.correction?'<br>正确说法：'+esc(q.correction):"")
+        +'</div></div>';
+    });
+    h+='</div>';
+    if(wrongIds.length) h+='<button class="btn-primary" style="margin-top:14px" onclick="practiceSimWrong()">练这批错题 · '+wrongIds.length+' 题</button>';
   } else {
     var wrongIdx=[]; QZ.queue.forEach(function(slot,i){ var r=QZ.results[i]; if(r&&!r.correct) wrongIdx.push(i); });
     h+='<div class="card mt"><div style="font-weight:600">模考错题（'+wrongIdx.length+'）</div>';
@@ -980,11 +1037,32 @@ function resultHTML(){
     if(wrongIdx.length>60) h+='<p style="color:var(--dim);font-size:13px">仅显示前 60 道，其余可在错题练习中复习。</p>';
     h+='</div>';
   }
-  h+='<button class="btn-primary" style="margin-top:18px" onclick="exitToTab(\'today\')">返回今日</button>';
-  if(!QZ.exam) h+='<button class="btn-ghost" style="width:100%;margin-top:10px" onclick="restartSession()">再来一组</button>';
+  if(QZ.mode==="sim"){
+    h+='<div class="row" style="margin-top:12px"><button class="btn-ghost" style="flex:1" onclick="exitToTab(\'today\')">返回今日</button><button class="btn-ghost" style="flex:1" onclick="retakeSim()">再来一场</button></div>';
+  } else {
+    h+='<button class="btn-primary" style="margin-top:18px" onclick="exitToTab(\'today\')">返回今日</button>';
+    if(!QZ.exam) h+='<button class="btn-ghost" style="width:100%;margin-top:10px" onclick="restartSession()">再来一组</button>';
+  }
   return h;
 }
 function restartSession(){ var m=QZ.mode,t=QZ.title,ids=QZ.baseIds,ex=QZ.exam; QZ=null; stopTimer(); newSession(m,t,ids,ex); }
+
+/* ---- 考试模拟：线性导航与交卷 ---- */
+function simNext(){ if(QZ.pos<QZ.queue.length-1){ QZ.pos++; QZ.dir=1; saveSessionSnap(); renderApp(); window.scrollTo(0,0); } }
+function submitExam(){
+  var answered=Object.keys(QZ.results).length, left=QZ.queue.length-answered;
+  if(left>0){
+    showModal("还有 "+left+" 题未答","未答的题按 0 分计，确定现在交卷吗？",[
+      {label:"继续答题",cls:"pri",fn:"closeModal()"},
+      {label:"确认交卷",cls:"",fn:"closeModal();finishSession()"}
+    ]);
+  } else finishSession();
+}
+function practiceSimWrong(){
+  var ids=[]; QZ.queue.forEach(function(slot,i){ var r=QZ.results[i]; if(!r||!r.correct) ids.push(slot.qid); });
+  QZ=null; stopTimer(); newSession("simwrong","模拟错题练习",ids,false);
+}
+function retakeSim(){ QZ=null; stopTimer(); startMode("sim"); }
 
 /* ============ 启动 ============ */
 loadState().then(function(){ renderApp(); });
